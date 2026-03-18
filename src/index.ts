@@ -3,12 +3,11 @@
 /**
  * terminal
  *
- * A generic MCP server that exposes CLI tools over stdio.
- * Each configured CLI becomes a separate MCP tool.
+ * A generic MCP server that exposes a single 'execute' tool for running
+ * CLI commands over stdio. Uses execFile (no shell) to prevent injection.
  *
- * Configuration via environment variables:
- *   CLI_TOOLS=mvn,git,gradle   — comma-separated list of CLI commands to expose
- *   CLI_TIMEOUT=30000           — execution timeout in ms (default: 30s)
+ * Trust and blocking are managed by Kiro's autoApprove in mcp.json —
+ * the server itself has no allowlist. Any CLI on the user's PATH can be called.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -22,48 +21,43 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-const DEFAULT_TOOLS = ["mvn", "git"];
 const DEFAULT_TIMEOUT = 30_000;
 
-function getConfig() {
-  const toolsEnv = process.env.CLI_TOOLS;
-  const tools = toolsEnv
-    ? toolsEnv.split(",").map((t) => t.trim()).filter(Boolean)
-    : DEFAULT_TOOLS;
-  const timeout =
-    parseInt(process.env.CLI_TIMEOUT || "", 10) || DEFAULT_TIMEOUT;
-  return { tools, timeout };
-}
-
-function buildToolDefinitions(cliNames: string[]) {
-  return cliNames.map((cli) => ({
-    name: cli,
-    description: `Execute the '${cli}' command-line tool. Pass subcommands and flags as individual items in the 'args' array.`,
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        args: {
-          type: "array" as const,
-          items: { type: "string" as const },
-          description: `Arguments to pass to '${cli}'. Example: ["clean", "install", "-DskipTests"]`,
-        },
-        cwd: {
-          type: "string" as const,
-          description:
-            "Working directory for the command. Defaults to the server's cwd.",
-        },
-        timeout: {
-          type: "number" as const,
-          description:
-            "Timeout in milliseconds for this invocation. Overrides the global CLI_TIMEOUT.",
-        },
+const EXECUTE_TOOL = {
+  name: "execute",
+  description:
+    "Execute a CLI command. The command is run directly via execFile (not through a shell) " +
+    "to prevent injection. Use for any CLI: mvn, git, gradle, docker, kubectl, npm, cargo, etc.",
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      command: {
+        type: "string" as const,
+        description: "The CLI command to run (e.g. 'mvn', 'git', 'gradle').",
       },
-      required: ["args"],
+      args: {
+        type: "array" as const,
+        items: { type: "string" as const },
+        description:
+          'Arguments to pass to the command. Example: ["clean", "install", "-DskipTests"]',
+      },
+      cwd: {
+        type: "string" as const,
+        description:
+          "Working directory for the command. Defaults to the server's cwd.",
+      },
+      timeout: {
+        type: "number" as const,
+        description:
+          "Timeout in milliseconds. Default: 30000.",
+      },
     },
-  }));
-}
+    required: ["command", "args"],
+  },
+};
 
-interface ToolCallArgs {
+interface ExecuteArgs {
+  command: string;
   args: string[];
   cwd?: string;
   timeout?: number;
@@ -79,7 +73,7 @@ export async function executeCli(
     const result = await execFileAsync(command, args, {
       cwd: cwd || process.cwd(),
       timeout: timeout,
-      maxBuffer: 10 * 1024 * 1024, // 10 MB
+      maxBuffer: 10 * 1024 * 1024,
       env: { ...process.env },
     });
     return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
@@ -109,40 +103,35 @@ export async function executeCli(
 }
 
 async function main(): Promise<void> {
-  const config = getConfig();
+  const timeout =
+    parseInt(process.env.CLI_TIMEOUT || "", 10) || DEFAULT_TIMEOUT;
 
   const server = new Server(
-    { name: "terminal", version: "0.1.0" },
+    { name: "terminal", version: "0.2.0" },
     { capabilities: { tools: {} } },
   );
 
-  const toolDefs = buildToolDefinitions(config.tools);
-  const allowedTools = new Set(config.tools);
-
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: toolDefs,
+    tools: [EXECUTE_TOOL],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: rawArgs } = request.params;
 
-    if (!allowedTools.has(name)) {
+    if (name !== "execute") {
       return {
-        content: [
-          {
-            type: "text",
-            text: `Error: Unknown tool '${name}'. Allowed: ${config.tools.join(", ")}`,
-          },
-        ],
+        content: [{ type: "text", text: `Error: Unknown tool '${name}'.` }],
         isError: true,
       };
     }
 
-    const params = (rawArgs || {}) as unknown as ToolCallArgs;
-    const args = params.args || [];
-    const timeout = params.timeout || config.timeout;
-
-    const result = await executeCli(name, args, params.cwd, timeout);
+    const params = (rawArgs || {}) as unknown as ExecuteArgs;
+    const result = await executeCli(
+      params.command,
+      params.args || [],
+      params.cwd,
+      params.timeout || timeout,
+    );
 
     const parts: string[] = [];
     if (result.stdout) parts.push(result.stdout);
