@@ -30,7 +30,8 @@ function getConfig() {
   const tools = toolsEnv
     ? toolsEnv.split(",").map((t) => t.trim()).filter(Boolean)
     : DEFAULT_TOOLS;
-  const timeout = parseInt(process.env.CLI_TIMEOUT || "", 10) || DEFAULT_TIMEOUT;
+  const timeout =
+    parseInt(process.env.CLI_TIMEOUT || "", 10) || DEFAULT_TIMEOUT;
   return { tools, timeout };
 }
 
@@ -48,11 +49,13 @@ function buildToolDefinitions(cliNames: string[]) {
         },
         cwd: {
           type: "string" as const,
-          description: "Working directory for the command. Defaults to the server's cwd.",
+          description:
+            "Working directory for the command. Defaults to the server's cwd.",
         },
         timeout: {
           type: "number" as const,
-          description: "Timeout in milliseconds for this invocation. Overrides the global CLI_TIMEOUT.",
+          description:
+            "Timeout in milliseconds for this invocation. Overrides the global CLI_TIMEOUT.",
         },
       },
       required: ["args"],
@@ -66,7 +69,7 @@ interface ToolCallArgs {
   timeout?: number;
 }
 
-async function executeCli(
+export async function executeCli(
   command: string,
   args: string[],
   cwd?: string,
@@ -97,7 +100,9 @@ async function executeCli(
     }
     return {
       stdout: execError.stdout || "",
-      stderr: execError.stderr || (error instanceof Error ? error.message : String(error)),
+      stderr:
+        execError.stderr ||
+        (error instanceof Error ? error.message : String(error)),
       exitCode: typeof execError.code === "number" ? execError.code : 1,
     };
   }
@@ -123,7 +128,12 @@ async function main(): Promise<void> {
 
     if (!allowedTools.has(name)) {
       return {
-        content: [{ type: "text", text: `Error: Unknown tool '${name}'. Allowed: ${config.tools.join(", ")}` }],
+        content: [
+          {
+            type: "text",
+            text: `Error: Unknown tool '${name}'. Allowed: ${config.tools.join(", ")}`,
+          },
+        ],
         isError: true,
       };
     }
