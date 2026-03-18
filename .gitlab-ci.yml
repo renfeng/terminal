@@ -1,0 +1,94 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+stages:
+  - validate
+  - build
+  - publish
+  - mirror
+
+validate:
+  stage: validate
+  image: node:20-alpine
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - src/**/*
+        - package.json
+        - package-lock.json
+        - tsconfig.json
+        - .gitlab-ci.yml
+  script:
+    - npm ci
+    - npx tsc --noEmit
+    - npm test
+
+pipeline-guard:
+  stage: validate
+  image: node:20-alpine
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - echo "Pipeline OK"
+
+build:
+  stage: build
+  image: node:20-alpine
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - src/**/*
+        - package.json
+        - package-lock.json
+        - tsconfig.json
+  script:
+    - npm ci
+    - npm run build
+    - npm test
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 7 days
+
+publish-npm:
+  stage: publish
+  image: node:20-alpine
+  needs:
+    - job: build
+      artifacts: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - src/**/*
+        - package.json
+        - package-lock.json
+        - tsconfig.json
+  script:
+    - VERSION=$(node -p "require('./package.json').version")
+    - echo "Version in package.json ${VERSION}"
+    - |
+      if npm view "@renfeng/cli-mcp-server@${VERSION}" version 2>/dev/null; then
+        echo "Version ${VERSION} already published — skipping"
+        exit 0
+      fi
+    - echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
+    - npm publish --access public --ignore-scripts
+    - echo "Published @renfeng/cli-mcp-server@${VERSION}"
+
+mirror-github:
+  stage: mirror
+  image: alpine:latest
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  before_script:
+    - apk add --no-cache git openssh-client
+    - mkdir -p ~/.ssh
+    - echo "$GITHUB_DEPLOY_KEY" > ~/.ssh/id_ed25519
+    - chmod 600 ~/.ssh/id_ed25519
+    - ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+  script:
+    - git remote add github git@github.com:renfeng/cli-mcp-server.git || git remote set-url github git@github.com:renfeng/cli-mcp-server.git
+    - git push github HEAD:main --force-with-lease
+  allow_failure: true
